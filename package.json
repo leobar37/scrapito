@@ -1,0 +1,32 @@
+{
+  "name": "scrap-many",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "module": "src/sdk/index.ts",
+  "bin": {
+    "scrap": "src/cli/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src",
+    "test:integration": "bun test tests/integration",
+    "test:live": "bun test tests/live",
+    "db:migrate": "bun run src/cli/index.ts db migrate",
+    "scrap": "bun run src/cli/index.ts",
+    "browser:install": "agent-browser install",
+    "browser:doctor": "agent-browser doctor --json",
+    "browser:probe": "bun run scripts/probe-agent-browser.ts"
+  },
+  "dependencies": {
+    "agent-browser": "0.31.1",
+    "commander": "12.1.0",
+    "hono": "4.6.14",
+    "robots-parser": "3.0.1",
+    "zod": "3.24.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.1.14",
+    "typescript": "5.7.2"
+  }
+}

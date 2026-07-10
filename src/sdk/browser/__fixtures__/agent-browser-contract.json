@@ -1,0 +1,63 @@
+{
+  "version": "0.31.1",
+  "capturedAt": "2026-07-10",
+  "single": {
+    "success": {
+      "success": true,
+      "data": {
+        "lifecycle": "<lifecycle>",
+        "title": "probe",
+        "url": "data:text/html,<title>probe</title>"
+      },
+      "error": null
+    },
+    "failure": {
+      "success": false,
+      "data": null,
+      "error": "Element not found. Verify the selector is correct and the element exists in the DOM."
+    }
+  },
+  "batch": [
+    {
+      "command": [
+        "get",
+        "title"
+      ],
+      "error": null,
+      "result": {
+        "lifecycle": "<lifecycle>",
+        "title": "probe"
+      },
+      "success": true
+    },
+    {
+      "command": [
+        "get",
+        "url"
+      ],
+      "error": null,
+      "result": {
+        "lifecycle": "<lifecycle>",
+        "url": "data:text/html,<title>probe</title>"
+      },
+      "success": true
+    }
+  ],
+  "tabList": {
+    "success": true,
+    "data": {
+      "lifecycle": "<lifecycle>",
+      "tabs": [
+        {
+          "active": true,
+          "label": null,
+          "tabId": "t1",
+          "title": "data:text/html,<title>probe</title>",
+          "type": "page",
+          "url": "data:text/html,<title>probe</title>"
+        }
+      ]
+    },
+    "error": null
+  }
+}
