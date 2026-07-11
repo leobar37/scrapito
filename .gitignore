@@ -6,6 +6,7 @@ storage/
 dist/
 .output/
 .vinxi/
+/reports/
 .env
 .env.local
 .DS_Store
