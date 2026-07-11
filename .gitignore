@@ -4,4 +4,8 @@ storage/
 *.sqlite
 *.sqlite-*
 dist/
+.output/
+.vinxi/
+.env
+.env.local
 .DS_Store

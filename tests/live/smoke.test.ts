@@ -1,17 +1,13 @@
 /**
  * Opt-in live smoke test. Runs ONLY when `AGENT_BROWSER_LIVE=1` and an honest
- * `SCRAP_USER_AGENT` are set. Limited to one list page and one product detail
- * per store, HTTP/SSR first, no browser on the happy path. NEVER run in CI.
+ * `SCRAP_USER_AGENT` are set. Limited to one list page per store, HTTP/SSR
+ * first, no browser on the happy path. NEVER run in CI.
  */
 import { test, expect } from "bun:test";
-import {
-  CrawlPolicy,
-  defaultHttpFetch,
-  defaultImageFetch,
-} from "../../src/policy/crawl-policy.ts";
-import { normalizeRipleyList } from "../../src/scrapers/ripley-pe/normalize.ts";
-import { normalizeFalabellaList } from "../../src/scrapers/falabella-pe/normalize.ts";
-import { ProductInputSchema } from "../../src/domain/schemas.ts";
+import { CrawlPolicy, defaultHttpFetch, defaultImageFetch } from "../../apps/ingest/src/policy/crawl-policy.ts";
+import { normalizeRipleyList } from "../../apps/ingest/src/scrapers/ripley-pe/normalize.ts";
+import { normalizeFalabellaList } from "../../apps/ingest/src/scrapers/falabella-pe/normalize.ts";
+import { ProductInputSchema } from "@scrapito/contracts";
 
 const LIVE = process.env.AGENT_BROWSER_LIVE === "1" && !!process.env.SCRAP_USER_AGENT;
 const maybe = LIVE ? test : test.skip;

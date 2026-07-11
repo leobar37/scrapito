@@ -1,0 +1,29 @@
+{
+  "name": "@scrapito/ingest",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "scrap-ingest": "./src/cli/index.ts"
+  },
+  "scripts": {
+    "scrap-ingest": "bun run src/cli/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src",
+    "browser:install": "agent-browser install",
+    "browser:doctor": "agent-browser doctor --json",
+    "browser:probe": "bun run scripts/probe-agent-browser.ts"
+  },
+  "dependencies": {
+    "@scrapito/contracts": "workspace:*",
+    "@scrapito/catalog": "workspace:*",
+    "agent-browser": "0.31.1",
+    "commander": "12.1.0",
+    "robots-parser": "3.0.1",
+    "zod": "3.24.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.1.14",
+    "typescript": "5.7.2"
+  }
+}
