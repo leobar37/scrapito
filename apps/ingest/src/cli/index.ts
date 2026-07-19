@@ -7,7 +7,7 @@
  * no agent-browser).
  */
 import { Command } from "commander";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   ProductInputSchema,
   InvocationContextSchema,
@@ -31,9 +31,20 @@ import { loadConfig } from "../config.ts";
 import { buildIngestRunner, openIngestWriter, type OpenIngestWriterResult } from "../app/services.ts";
 import { getScraper, listScrapers } from "../scrapers/registry.ts";
 import { runScraperCanary } from "../scrapers/canary.ts";
-import { getDiscovery, listDiscoveries, FsDiscoveryArtifacts } from "../discovery/index.ts";
+import {
+  getDiscovery,
+  listDiscoveries,
+  FsDiscoveryArtifacts,
+  parseHar,
+  sanitizeHar,
+  analyzeHar,
+  extractCandidateFixture,
+  verifyDiscoveryDir,
+} from "../discovery/index.ts";
 import { BrowserManager } from "../browser/browser-manager.ts";
+import { noopTabStore } from "../browser/types.ts";
 import { CrawlPolicy, defaultHttpFetch, defaultImageFetch } from "../policy/crawl-policy.ts";
+import { MemoryHttpCache } from "../policy/http-cache.ts";
 import { createLogger } from "../util/logger.ts";
 import {
   adaptTargetInvocation,
@@ -233,7 +244,8 @@ discover.command("list").action(() => {
 discover
   .command("run <scraperId>")
   .description("capture SSR/HAR artifacts for an operator to author a scraper from")
-  .action(async (scraperId: string) => {
+  .option("--no-writer", "local-only mode: in-memory cache + no SQLite lease (default keeps the writer lease)")
+  .action(async (scraperId: string, opts: { writer: boolean }) => {
     const discovery = getDiscovery(scraperId);
     if (!discovery) {
       console.error(`unknown discovery id: ${scraperId}`);
@@ -244,46 +256,149 @@ discover
       console.error("SCRAP_USER_AGENT must be set to run discovery");
       process.exit(1);
     }
-    const { writer, logger, close } = openIngestWriter(config, { requireMigrated: true });
-    const lease = new WriterLease(writer.db);
-    try {
-      lease.acquire();
-    } catch (err) {
-      close();
-      if (err instanceof WriterLockedError) {
-        console.error(err.message);
-        process.exit(1);
+
+    // Default path keeps the writer lease so discovery serializes with every
+    // other writer and shares the persistent HTTP cache / tab registry.
+    // --no-writer trades both away for a DB-free local reconnaissance run.
+    let writer: OpenIngestWriterResult | null = null;
+    let lease: WriterLease | null = null;
+    if (opts.writer) {
+      writer = openIngestWriter(config, { requireMigrated: true });
+      lease = new WriterLease(writer.writer.db);
+      try {
+        lease.acquire();
+      } catch (err) {
+        writer.close();
+        if (err instanceof WriterLockedError) {
+          console.error(err.message);
+          process.exit(1);
+        }
+        throw err;
       }
-      throw err;
+      lease.startHeartbeat();
     }
-    lease.startHeartbeat();
+    const logger = writer?.logger ?? createLogger();
     try {
       const policy = new CrawlPolicy({
         userAgent: config.userAgent,
         httpFetch: defaultHttpFetch(),
         imageFetch: defaultImageFetch(),
-        cache: writer.httpCache,
+        cache: writer ? writer.writer.httpCache : new MemoryHttpCache(),
         logger,
       });
       const browserManager = new BrowserManager({
         bin: config.agentBrowserBin,
         timeoutMs: config.agentBrowserTimeoutMs,
         logger,
-        tabStore: writer.tabStore,
+        tabStore: writer ? writer.writer.tabStore : noopTabStore,
       });
       const session = await browserManager.start({ session: `discover-${scraperId}`, userAgent: config.userAgent });
       const runId = `${scraperId}-${Date.now()}`;
       const artifacts = new FsDiscoveryArtifacts(config.discoveryDir, runId);
       try {
         await discovery.run({ browser: session, policy, artifacts, logger });
-        console.log(JSON.stringify({ ok: true, dir: artifacts.dir }));
+        const manifest = JSON.parse(readFileSync(artifacts.dir + "/manifest.json", "utf8"));
+        console.log(JSON.stringify({
+          ok: true,
+          dir: artifacts.dir,
+          harAvailable: manifest.harAvailable,
+          scenarios: manifest.scenarios,
+        }));
       } finally {
         await session.close().catch(() => {});
       }
     } finally {
-      lease.release();
-      close();
+      lease?.release();
+      writer?.close();
     }
+  });
+
+// ---- offline HAR pipeline: sanitize → analyze → fixture → verify ----
+// All four are pure filesystem operations: no network, no browser, no DB, no
+// writer lease. They only touch artifacts already captured under a run dir.
+discover
+  .command("sanitize <dir>")
+  .description("redact secrets from network.har into network.sanitized.har (offline)")
+  .action((dir: string) => {
+    const rawPath = `${dir}/network.har`;
+    if (!existsSync(rawPath)) {
+      console.error(`no network.har in ${dir}`);
+      process.exit(1);
+    }
+    let har;
+    try {
+      har = parseHar(JSON.parse(readFileSync(rawPath, "utf8")));
+    } catch (err) {
+      console.error(`invalid HAR: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    const { har: sanitized, stats } = sanitizeHar(har);
+    writeFileSync(`${dir}/network.sanitized.har`, JSON.stringify(sanitized));
+    console.log(JSON.stringify({ ok: true, sanitized: `${dir}/network.sanitized.har`, stats }));
+  });
+
+discover
+  .command("analyze <dir>")
+  .description("classify sanitized HAR into endpoint-candidates.json + samples (offline)")
+  .action((dir: string) => {
+    const sanitizedPath = `${dir}/network.sanitized.har`;
+    if (!existsSync(sanitizedPath)) {
+      console.error(`no network.sanitized.har in ${dir}; run \`discover sanitize ${dir}\` first`);
+      process.exit(1);
+    }
+    try {
+      const har = parseHar(JSON.parse(readFileSync(sanitizedPath, "utf8")));
+      const result = analyzeHar(har);
+      mkdirSync(`${dir}/samples`, { recursive: true });
+      for (const sample of result.samples) {
+        writeFileSync(`${dir}/${sample.name}`, sample.body);
+      }
+      const file = {
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        sourceHar: "network.sanitized.har",
+        stats: result.stats,
+        candidates: result.candidates,
+      };
+      writeFileSync(`${dir}/endpoint-candidates.json`, JSON.stringify(file, null, 2));
+      console.log(JSON.stringify({
+        ok: true,
+        candidates: result.candidates.length,
+        file: `${dir}/endpoint-candidates.json`,
+        stats: result.stats,
+      }));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+discover
+  .command("fixture <dir>")
+  .description("extract one endpoint candidate into a review package (fixture + descriptor + draft)")
+  .requiredOption("--candidate <index>", "index into endpoint-candidates.json", Number)
+  .option("--out <dir>", "output directory (default: <dir>/candidates)")
+  .action((dir: string, opts: { candidate: number; out?: string }) => {
+    try {
+      const result = extractCandidateFixture({
+        dir,
+        candidateIndex: opts.candidate,
+        outDir: opts.out,
+      });
+      console.log(JSON.stringify({ ok: true, ...result }));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+discover
+  .command("verify <dir>")
+  .description("verify manifest integrity, sanitization and analysis reproducibility (offline)")
+  .action((dir: string) => {
+    const report = verifyDiscoveryDir(dir);
+    console.log(JSON.stringify(report, null, 2));
+    if (!report.ok) process.exit(1);
   });
 
 // ---- target (typed, deterministic one-shot boundary for external callers) ----

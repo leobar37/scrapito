@@ -3,7 +3,8 @@
 ## Project Overview
 
 `scrapito` is a **Peru-only e-commerce offer catalog** (Ripley PE, Falabella
-PE) built on **Bun + TypeScript**, split into a Bun workspace monorepo:
+PE, Promart PE, Oechsle PE) built on **Bun + TypeScript**, split into a Bun
+workspace monorepo:
 
 - `apps/api` — always-on, physically read-only Hono HTTP API.
 - `apps/ingest` — the `scrap-ingest` CLI: synchronous, single-writer scraping
@@ -85,6 +86,39 @@ bun run db:migrate             # packages/catalog write-side migration runner
 bun run dev:api / dev:web      # apps/api / apps/web dev servers
 bun run build:web              # apps/web client + SSR bundle
 bun run ingest -- run <id> --json   # scrap-ingest CLI
+```
+
+## Quick Reference — Available Stores & Capabilities
+
+External agents can discover what stores and scrapers are available without
+reading code, via these CLI commands:
+
+```bash
+# List every registered scraper (id, store, version, defaults)
+bun run ingest -- scrapers list
+
+# Full capability matrix: every site × strategy × capability cell
+# (category:acquire, search:acquire, etc.), with supported status and evidence
+bun run ingest -- target matrix
+
+# List configured store IDs (requires DB)
+bun run ingest -- stores list
+```
+
+**Currently registered stores:** `ripley-pe`, `falabella-pe`, `promart-pe`, `oechsle-pe`
+
+All VTEX-based stores (promart-pe, oechsle-pe) use the public VTEX Search API
+(no browser needed). Ripley and Falabella use SSR HTML parsing with `__NEXT_DATA__`.
+Every scraper has a `selfCheck()` that validates offline via checked-in fixtures.
+
+### Invocation quick-start
+
+```bash
+# Acquire products by category (Oechsle example)
+bun run ingest -- target run invocation.json
+
+# Or pipe from stdin
+echo '{"site":"oechsle-pe","intent":"acquire","target":{"kind":"category","externalId":"tecnologia/televisores"},"constraints":{"pages":{"from":1,"to":2}}}' | bun run ingest -- target run -
 ```
 
 ## Code Conventions & Common Patterns

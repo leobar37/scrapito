@@ -120,6 +120,7 @@ export const InvocationContextSchema = z
         "ripley-pe": "simple.ripley.com.pe",
         "falabella-pe": "www.falabella.com.pe",
         "promart-pe": "www.promart.pe",
+        "oechsle-pe": "www.oechsle.pe",
       }[input.site];
       if (new URL(input.target.canonicalUrl).hostname !== expectedHost) {
         ctx.addIssue({

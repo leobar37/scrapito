@@ -44,6 +44,14 @@ export const SITE_DEFINITIONS = Object.freeze([
     repairRoots: ["apps/ingest/src/scrapers/promart-pe"],
     contextRefs: ["apps/ingest/src/scrapers/promart-pe/products.ts", "apps/ingest/src/scrapers/promart-pe/normalize.ts"],
   }),
+  SiteDefinitionSchema.parse({
+    site: "oechsle-pe",
+    scraperId: "oechsle-pe-products",
+    hosts: ["www.oechsle.pe"],
+    canonicalization: { protocol: "https:", host: "www.oechsle.pe", stripHash: true },
+    repairRoots: ["apps/ingest/src/scrapers/oechsle-pe"],
+    contextRefs: ["apps/ingest/src/scrapers/oechsle-pe/products.ts", "apps/ingest/src/scrapers/oechsle-pe/normalize.ts"],
+  }),
 ] satisfies SiteDefinition[]);
 
 export const STRATEGY_DEFINITIONS = Object.freeze([
@@ -124,6 +132,10 @@ const SUPPORTED_EVIDENCE = new Map<string, readonly string[]>([
   ["falabella-pe:search:repair", ["falabella-pe/__fixtures__/list.html", "adapter:search"]],
   ["promart-pe:category:repair", ["promart-pe/__fixtures__/search-refrigeracion.json", "adapter:category"]],
   ["promart-pe:search:repair", ["promart-pe/__fixtures__/search-refrigeracion.json", "adapter:search"]],
+  ["oechsle-pe:category:acquire", ["oechsle-pe/__fixtures__/search-televisores.json", "adapter:category"]],
+  ["oechsle-pe:search:acquire", ["oechsle-pe/__fixtures__/search-televisores.json", "adapter:search"]],
+  ["oechsle-pe:category:repair", ["oechsle-pe/__fixtures__/search-televisores.json", "adapter:category"]],
+  ["oechsle-pe:search:repair", ["oechsle-pe/__fixtures__/search-televisores.json", "adapter:search"]],
 ]);
 
 function unsupportedReason(strategy: StrategyId, capability: CapabilityId): string {

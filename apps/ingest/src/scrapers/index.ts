@@ -22,3 +22,6 @@ export {
   normalizeFalabellaDetail,
 } from "./falabella-pe/normalize.ts";
 export { FIXTURE_LIST_URL } from "./fixture-products.ts";
+export {
+  normalizeOechsleSearchResults,
+} from "./oechsle-pe/normalize.ts";

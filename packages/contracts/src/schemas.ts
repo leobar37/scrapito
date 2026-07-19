@@ -10,6 +10,8 @@ const ALLOWED_URL_HOSTS: Record<string, true> = {
   "media.falabella.com.pe": true,
   "www.promart.pe": true,
   "promart.vteximg.com.br": true,
+  "www.oechsle.pe": true,
+  "oechsle.vteximg.com.br": true,
 };
 
 /** A canonical HTTPS Peru URL restricted to the storefront/CDN allowlist. */

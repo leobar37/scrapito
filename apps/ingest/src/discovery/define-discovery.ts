@@ -8,6 +8,24 @@ import type { BrowserSession } from "../browser/browser-manager.ts";
 import type { CrawlPolicy } from "../policy/crawl-policy.ts";
 import type { Logger } from "../util/logger.ts";
 
+export interface ArtifactManifestEntry {
+  readonly name: string;
+  readonly sha256: string;
+  readonly bytes: number;
+  readonly savedAt: string;
+}
+
+export interface DiscoveryManifestMeta {
+  readonly scraperId: string;
+  readonly store: StoreId;
+  readonly startedAt: string;
+  readonly userAgent: string;
+  /** Captured scenario names, in execution order. */
+  readonly scenarios: readonly string[];
+  /** false when the browser HAR failed and requests() fallback was used. */
+  readonly harAvailable: boolean;
+}
+
 export interface DiscoveryArtifacts {
   /** Absolute directory `data/discovery/<run-id>/` for this discovery run. */
   readonly dir: string;
@@ -15,6 +33,8 @@ export interface DiscoveryArtifacts {
   save(name: string, content: string | Uint8Array): string;
   /** Persist a JSON artifact (request summaries, sampled payloads). */
   saveJson(name: string, data: unknown): string;
+  /** Freeze the run inventory (per-artifact SHA-256) as `manifest.json`. */
+  writeManifest(meta: DiscoveryManifestMeta): string;
 }
 
 export interface DiscoveryContext {

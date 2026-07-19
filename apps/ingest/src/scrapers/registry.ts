@@ -8,12 +8,14 @@ import type { Scraper } from "./define-scraper.ts";
 import { ripleyProductsScraper } from "./ripley-pe/products.ts";
 import { falabellaProductsScraper } from "./falabella-pe/products.ts";
 import { promartProductsScraper } from "./promart-pe/products.ts";
+import { oechsleProductsScraper } from "./oechsle-pe/products.ts";
 import { fixtureProductsScraper } from "./fixture-products.ts";
 
 const REGISTERED: readonly Scraper[] = [
   ripleyProductsScraper,
   falabellaProductsScraper,
   promartProductsScraper,
+  oechsleProductsScraper,
   fixtureProductsScraper,
 ];
 

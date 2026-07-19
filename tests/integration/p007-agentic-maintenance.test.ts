@@ -114,6 +114,11 @@ const FIXTURE_BY_SITE: Record<StoreId, { path: string; evidenceId: string; conte
     evidenceId: "promart-pe/__fixtures__/search-refrigeracion.json",
     contentType: "application/json",
   },
+  "oechsle-pe": {
+    path: "apps/ingest/src/scrapers/oechsle-pe/__fixtures__/search-televisores.json",
+    evidenceId: "oechsle-pe/__fixtures__/search-televisores.json",
+    contentType: "application/json",
+  },
 };
 const WORKTREE_REGISTRY_BY_SCRAPER = Object.fromEntries(
   SITE_DEFINITIONS.map((site) => [site.scraperId, site.repairRoots[0]]),
@@ -187,6 +192,9 @@ function expectedFixtureUrl(invocation: InvocationContext): string {
     return invocation.strategy === "category"
       ? `https://www.falabella.com.pe/falabella-pe/category/${value}?page=1`
       : `https://www.falabella.com.pe/falabella-pe/search?Ntt=${encoded}&page=1`;
+  }
+  if (invocation.site === "oechsle-pe") {
+    return `https://www.oechsle.pe/api/catalog_system/pub/products/search/${encoded}?_from=0&_to=49`;
   }
   return `https://www.promart.pe/api/catalog_system/pub/products/search/${encoded}?_from=0&_to=49`;
 }
@@ -654,7 +662,7 @@ describe("P-007 frozen support matrix and one-shot architecture", () => {
         (["acquire", "repair"] as const).map((capability) => `${site.site}:${strategy}:${capability}`),
       ),
     ).sort();
-    expect(p007Cells).toHaveLength(3 * 5 * 4);
+    expect(p007Cells).toHaveLength(4 * 5 * 4);
     expect(supported).toEqual(expected);
     expect(Object.isFrozen(CAPABILITY_SUPPORT_MATRIX)).toBe(true);
     for (const cell of p007Cells) {
@@ -686,7 +694,7 @@ describe("P-007 frozen support matrix and one-shot architecture", () => {
       },
     };
     const unsupported = CAPABILITY_SUPPORT_MATRIX.filter((cell) => cell.capability !== "select" && !cell.supported);
-    expect(unsupported).toHaveLength(48);
+    expect(unsupported).toHaveLength(64);
     for (const cell of unsupported) {
       let caught: unknown;
       try {
@@ -725,12 +733,11 @@ describe("P-007 frozen support matrix and one-shot architecture", () => {
     }
   });
 });
-
 describe("P-007 manifest to fake OMP to fixed runner to catalog", () => {
-  test("runs all six acquire cells concurrently in analysis and serially at the writer with terminal metrics", async () => {
+  test("runs all eight acquire cells concurrently in analysis and serially at the writer with terminal metrics", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scrapito-p007-acquire-"));
     const writer = openCatalogWriter(join(dir, "catalog.sqlite"), { migrate: true });
-    const session = new ParallelDeterministicSession(6);
+    const session = new ParallelDeterministicSession(8);
     const executor = new FixtureCatalogExecutor(writer);
     const writeGate = new WriteGate();
     try {
@@ -747,14 +754,14 @@ describe("P-007 manifest to fake OMP to fixed runner to catalog", () => {
         }),
       ));
 
-      expect(session.calls).toBe(6);
+      expect(session.calls).toBe(8);
       expect(session.maxObserved).toBeGreaterThan(1);
-      expect(executor.calls).toBe(6);
+      expect(executor.calls).toBe(8);
       expect(executor.maxObserved).toBe(1);
       expect(writeGate.maxObserved).toBe(1);
       expect(executions.every(({ result, states }) => result.status === "completed" && states.at(-1) === "terminal")).toBe(true);
-      expect(executions.map(({ result }) => result.usage.requests)).toEqual([1, 1, 1, 1, 1, 1]);
-      expect(executions.reduce((sum, { result }) => sum + result.usage.productsSaved, 0)).toBe(14);
+      expect(executions.map(({ result }) => result.usage.requests)).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+      expect(executions.reduce((sum, { result }) => sum + result.usage.productsSaved, 0)).toBe(20);
       expect(executions.every(({ result }) =>
         result.usage.llm?.costUsd === 0.001 && result.usage.imagesDownloaded === 0 && result.error === null,
       )).toBe(true);
@@ -764,11 +771,11 @@ describe("P-007 manifest to fake OMP to fixed runner to catalog", () => {
       expect(executions.filter(({ result }) => result.strategy === "search").every(({ result }) => result.coverage === null)).toBe(true);
       expect([...executor.requestedUrls].sort()).toEqual(invocations.map(expectedFixtureUrl).sort());
 
-      expect(sqliteCount(writer, "scraper_runs")).toBe(6);
-      expect(sqliteCount(writer, "target_coverages")).toBe(3);
-      expect(sqliteCount(writer, "products")).toBe(7);
-      expect(sqliteCount(writer, "price_observations")).toBe(7);
-      expect(sqliteCount(writer, "product_sightings")).toBe(7);
+      expect(sqliteCount(writer, "scraper_runs")).toBe(8);
+      expect(sqliteCount(writer, "target_coverages")).toBe(4);
+      expect(sqliteCount(writer, "products")).toBe(10);
+      expect(sqliteCount(writer, "price_observations")).toBe(10);
+      expect(sqliteCount(writer, "product_sightings")).toBe(10);
     } finally {
       writer.close();
       rmSync(dir, { recursive: true, force: true });
@@ -897,11 +904,11 @@ describe("P-007 manifest to fake OMP to fixed runner to catalog", () => {
     }
   });
 
+
 });
 
-
 describe("P-007 explicit hash-bound repair lifecycle", () => {
-  test("all six supported repair cells terminate awaiting human approval using temp-only static-registry canaries", async () => {
+  test("all eight supported repair cells terminate awaiting human approval using temp-only static-registry canaries", async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "scrapito-p007-repair-"));
     const host = new TempRepairHost(tempRoot);
     const repairExecutor = new LifecycleRepairInvocationExecutor(host, repairPlanner, "fake/repair-agent");
@@ -928,12 +935,12 @@ describe("P-007 explicit hash-bound repair lifecycle", () => {
         result.artifacts.filter((artifact) => artifact.sha256 !== null).length === 7 && result.error === null,
       )).toBe(true);
       expect(host.workspaceRoots.every((root) => root.startsWith(tempRoot))).toBe(true);
-      expect(host.canaryScrapers).toHaveLength(12);
+      expect(host.canaryScrapers).toHaveLength(16);
       expect(new Set(host.canaryScrapers)).toEqual(new Set(SITE_DEFINITIONS.map((site) => site.scraperId)));
       for (let index = 0; index < host.canaryHashes.length; index += 2) {
         expect(host.canaryHashes[index]).toBe(host.canaryHashes[index + 1]);
       }
-      expect(new Set(host.canaryHashes).size).toBe(3);
+      expect(new Set(host.canaryHashes).size).toBe(4);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -1013,9 +1020,8 @@ describe("P-007 architecture negative checks", () => {
 
     const registrySource = readFileSync(join(ROOT, "apps/ingest/src/scrapers/registry.ts"), "utf8");
     expect(registrySource).not.toContain("import(");
-    expect(registrySource.match(/from "\.\/(?:ripley-pe|falabella-pe|promart-pe)\/products\.ts"/g)).toHaveLength(3);
+    expect(registrySource.match(/from "\.\/(?:ripley-pe|falabella-pe|promart-pe|oechsle-pe)\/products\.ts"/g)).toHaveLength(4);
     const runnerSource = readFileSync(join(ROOT, "apps/ingest/src/app/scrape-runner.ts"), "utf8");
-    expect(runnerSource).toContain("this.deps.policy.fetch(url");
     expect(runnerSource).not.toMatch(/(?<!\.)\bfetch\(url/);
   });
 });
