@@ -7,6 +7,7 @@
 export const STOREFRONT_HOSTS: Record<string, true> = {
   "simple.ripley.com.pe": true,
   "www.falabella.com.pe": true,
+  "www.promart.pe": true,
 };
 
 /** Image CDN hosts. */
@@ -14,6 +15,7 @@ export const IMAGE_HOSTS: Record<string, true> = {
   "rimage.ripley.com.pe": true,
   "media.falabella.com": true,
   "media.falabella.com.pe": true,
+  "promart.vteximg.com.br": true,
 };
 
 /** Every allowlisted host. */
@@ -42,6 +44,15 @@ const SAFETY_FLOOR: Record<string, RegExp[]> = {
     /^\/falabella-pe\/myaccount/i,
     /^\/falabella-pe\/checkout/i,
     /^\/falabella-pe\/orders/i,
+  ],
+  "www.promart.pe": [
+    /^\/checkout\//i,
+    /^\/_secure\//i,
+    /^\/account\//i,
+    /^\/login\//i,
+    /^\/admin\//i,
+    /^\/Site\//i,
+    /^\/no-cache\//i,
   ],
 };
 

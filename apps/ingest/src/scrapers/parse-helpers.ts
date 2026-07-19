@@ -36,3 +36,29 @@ export function dig(root: unknown, path: string): unknown {
   }
   return node;
 }
+
+/** Best-effort plain text from a possibly-HTML string (tags stripped, ws collapsed). */
+export function plainText(value: unknown): string | undefined {
+  const s = asString(value);
+  if (!s) return undefined;
+  const text = s
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 0 ? text : undefined;
+}
+
+/** Normalize an array of {name|label|key|title, value|values|text} spec pairs
+ * into a flat record. Non-string or empty entries are skipped. */
+export function specPairs(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of asArray(value)) {
+    const rec = asRecord(entry);
+    if (!rec) continue;
+    const key = asString(rec["name"]) ?? asString(rec["label"]) ?? asString(rec["key"]) ?? asString(rec["title"]);
+    const val = asString(rec["value"]) ?? asString(rec["values"]) ?? asString(rec["text"]);
+    if (key && val) out[key] = val;
+  }
+  return out;
+}

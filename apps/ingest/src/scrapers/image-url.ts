@@ -42,6 +42,18 @@ export function canonicalizeRipleyImage(url: string): string | null {
   }
   return u.toString();
 }
+/** Canonicalize a Promart VTEX image URL by stripping sizing segments from the path.
+ *  E.g. /arquivos/ids/8761837-1000-1000/148753.jpg → /arquivos/ids/8761837/148753.jpg
+ *  Plain /arquivos/ids/NNNNNNN/filename.jpg is already canonical and passes through. */
+export function canonicalizePromartImage(url: string): string | null {
+  const u = safeUrl(url);
+  if (!u) return null;
+  if (u.hostname !== "promart.vteximg.com.br") return null;
+  // Strip -WIDTH-HEIGHT from the ID segment: /arquivos/ids/8761837-1000-1000/... → /arquivos/ids/8761837/...
+  u.pathname = u.pathname.replace(/\/ids\/(\d+)-\d+-\d+\//, "/ids/$1/");
+  return u.toString();
+}
+
 
 /** Parse a URL or return null (inference avoids URL global-type clashes). */
 function safeUrl(url: string) {

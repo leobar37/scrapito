@@ -8,6 +8,8 @@ const ALLOWED_URL_HOSTS: Record<string, true> = {
   "rimage.ripley.com.pe": true,
   "media.falabella.com": true,
   "media.falabella.com.pe": true,
+  "www.promart.pe": true,
+  "promart.vteximg.com.br": true,
 };
 
 /** A canonical HTTPS Peru URL restricted to the storefront/CDN allowlist. */
@@ -85,6 +87,8 @@ export const ProductInputSchema = z.object({
   externalId: z.string().min(1),
   canonicalUrl: CanonicalUrlSchema,
   name: z.string().min(1),
+  /** Free-text product description/long copy captured from the detail page. */
+  description: z.string().min(1).nullable().optional(),
   brand: z.string().min(1).nullable().optional(),
   sellerId: z.string().min(1).nullable().optional(),
   sellerName: z.string().min(1).nullable().optional(),

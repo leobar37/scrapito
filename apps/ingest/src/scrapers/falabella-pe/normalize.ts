@@ -14,7 +14,7 @@ import type { ProductInput } from "@scrapito/contracts";
 import { extractNextData, findJsonLdByType } from "../../util/html-extract.ts";
 import { canonicalizeFalabellaImage } from "../image-url.ts";
 import { toCents } from "../money.ts";
-import { asArray, asBoolean, asRecord, asString, dig } from "../parse-helpers.ts";
+import { asArray, asBoolean, asRecord, asString, dig, plainText, specPairs } from "../parse-helpers.ts";
 
 const STORE = "falabella-pe" as const;
 const BASE = "https://www.falabella.com.pe";
@@ -119,7 +119,20 @@ export function normalizeFalabellaDetail(html: string, sourceUrl: string): Produ
   const data = extractNextData(html);
   const product = dig(data, "props.pageProps.product") ?? dig(data, "props.pageProps.results.0");
   const fromSsr = normalizeFalabellaItem(product);
-  if (fromSsr) return { ...fromSsr, canonicalUrl: canonicalUrl(sourceUrl) ?? fromSsr.canonicalUrl };
+  if (fromSsr) {
+    const rec = asRecord(product) ?? {};
+    const specs = {
+      ...specPairs(rec["specifications"]),
+      ...specPairs(rec["attributes"]),
+      ...specPairs(rec["features"]),
+    };
+    return {
+      ...fromSsr,
+      canonicalUrl: canonicalUrl(sourceUrl) ?? fromSsr.canonicalUrl,
+      description: plainText(rec["description"]) ?? plainText(rec["longDescription"]) ?? null,
+      attributes: specs,
+    };
+  }
 
   const node = findJsonLdByType(html, "Product");
   if (!node) return null;
@@ -136,6 +149,7 @@ export function normalizeFalabellaDetail(html: string, sourceUrl: string): Produ
     externalId,
     canonicalUrl: canon,
     name,
+    description: plainText(node["description"]) ?? null,
     brand: brandRec ? asString(brandRec["name"]) ?? null : asString(node["brand"]) ?? null,
     sellerId: null,
     sellerName: null,

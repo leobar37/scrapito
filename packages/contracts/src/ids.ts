@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /** The two supported Peru storefronts. */
-export const StoreIdSchema = z.enum(["ripley-pe", "falabella-pe"]);
+export const StoreIdSchema = z.enum(["ripley-pe", "falabella-pe", "promart-pe"]);
 export type StoreId = z.infer<typeof StoreIdSchema>;
 
 /** Only Peruvian Soles are supported in v1. */

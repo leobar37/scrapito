@@ -1,5 +1,5 @@
 /** Raw SQLite row shapes shared by the read and write sides. */
-import type { StoreId } from "@scrapito/contracts";
+import type { CoverageStatus, CoverageStopReason, StoreId, TargetKind } from "@scrapito/contracts";
 
 export interface ProductRow {
   id: number;
@@ -12,6 +12,7 @@ export interface ProductRow {
   seller_name: string | null;
   sponsored: number;
   attributes_json: string;
+  description: string | null;
   source_hash: string | null;
   first_seen_at: string;
   last_seen_at: string;
@@ -28,6 +29,80 @@ export interface PriceRow {
   seller_id: string | null;
   in_stock: number;
   raw_json: string | null;
+}
+
+export interface TargetIdentityRow {
+  id: number;
+  store_id: StoreId;
+  kind: TargetKind;
+  identity_key: string;
+  target_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TargetCoverageRow {
+  id: number;
+  run_id: number;
+  target_id: number;
+  status: CoverageStatus;
+  authoritative: number;
+  started_at: string;
+  finished_at: string | null;
+  max_requests: number | null;
+  max_duration_ms: number | null;
+  requested_pages_json: string | null;
+  requests_made: number;
+  products_seen: number;
+  duplicates_seen: number;
+  products_rejected: number;
+  stop_reason: CoverageStopReason | null;
+  boundary_json: string | null;
+}
+
+export interface ProductSightingRow {
+  id: number;
+  coverage_id: number;
+  product_id: number;
+  price_observation_id: number;
+  seen_at: string;
+  source_hash: string | null;
+  name_snapshot: string | null;
+  brand_snapshot: string | null;
+  canonical_url_snapshot: string | null;
+  seller_id_snapshot: string | null;
+  seller_name_snapshot: string | null;
+  identity_snapshot_version: number | null;
+}
+
+export interface TargetMembershipRow {
+  target_id: number;
+  product_id: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  last_seen_coverage_id: number;
+  consecutive_complete_misses: number;
+  inactive_at: string | null;
+  inactivity_reason: "complete_coverage_miss" | "explicit_source_signal" | null;
+}
+
+export interface PriceMovementRow extends PriceRow {
+  effective_cents: number | null;
+  price_access: "public" | "card" | null;
+  previous_price_observation_id: number | null;
+  previous_effective_cents: number | null;
+  previous_price_access: "public" | "card" | null;
+  previous_seller_id: string | null;
+  previous_in_stock: number | null;
+  prior_historical_low_cents: number | null;
+  is_price_drop: number;
+  is_historical_low: number;
+  seller_changed: number;
+}
+
+export interface CurrentPriceDropRow extends PriceMovementRow {
+  last_sighted_at: string;
+  coverage_id: number;
 }
 
 export interface ImageRow {
@@ -99,6 +174,12 @@ export interface RunRow {
   requests_made: number;
   images_downloaded: number;
   last_error: string | null;
+  invocation_id: string | null;
+  strategy: string | null;
+  capability: string | null;
+  params_json: string | null;
+  max_requests: number | null;
+  max_duration_ms: number | null;
 }
 
 export interface WriterLeaseRow {

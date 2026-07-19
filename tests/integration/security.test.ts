@@ -421,7 +421,7 @@ describe("workspace module graph boundaries", () => {
 
   test("workspace index discovers every expected package", () => {
     expect([...index.keys()].sort()).toEqual(
-      ["@scrapito/api", "@scrapito/catalog", "@scrapito/contracts", "@scrapito/ingest", "@scrapito/web"].sort(),
+      ["@scrapito/agent", "@scrapito/api", "@scrapito/catalog", "@scrapito/contracts", "@scrapito/ingest", "@scrapito/web"].sort(),
     );
   });
 
@@ -444,6 +444,8 @@ describe("workspace module graph boundaries", () => {
       expect(f).not.toContain(`${sep}apps${sep}ingest${sep}`);
       expect(f).not.toContain(`${sep}catalog${sep}src${sep}write${sep}`);
       expect(f).not.toContain(`${sep}discovery${sep}`);
+      expect(f).not.toContain(`${sep}apps${sep}agent${sep}`);
+      expect(f).not.toContain(`${sep}.omp${sep}`);
     }
     for (const spec of graph.specifiers) {
       expect(spec).not.toBe("@scrapito/ingest");
@@ -451,13 +453,16 @@ describe("workspace module graph boundaries", () => {
       expect(spec).not.toBe("agent-browser");
       expect(spec).not.toBe("commander");
       expect(spec).not.toBe("robots-parser");
+      expect(spec).not.toBe("@scrapito/agent");
+      expect(spec.toLowerCase()).not.toContain("discord");
+      expect(spec.toLowerCase()).not.toContain("webhook");
     }
   });
 
   test("apps/api package.json dependencies never include ingestion-only packages", () => {
     const manifest = index.get("@scrapito/api")!.manifest;
     const deps = Object.keys(manifest.dependencies ?? {});
-    for (const forbidden of ["@scrapito/ingest", "agent-browser", "commander", "robots-parser"]) {
+    for (const forbidden of ["@scrapito/ingest", "@scrapito/agent", "agent-browser", "commander", "robots-parser", "discord"]) {
       expect(deps).not.toContain(forbidden);
     }
     expect(deps).toContain("@scrapito/contracts");

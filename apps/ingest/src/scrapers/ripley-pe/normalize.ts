@@ -9,7 +9,7 @@ import type { ProductInput } from "@scrapito/contracts";
 import { extractNextData, findJsonLdByType } from "../../util/html-extract.ts";
 import { canonicalizeRipleyImage } from "../image-url.ts";
 import { toCents } from "../money.ts";
-import { asArray, asBoolean, asRecord, asString, dig } from "../parse-helpers.ts";
+import { asArray, asBoolean, asRecord, asString, dig, plainText, specPairs } from "../parse-helpers.ts";
 
 const STORE = "ripley-pe" as const;
 const BASE = "https://simple.ripley.com.pe";
@@ -175,6 +175,7 @@ export function normalizeRipleyDetail(html: string, sourceUrl: string): ProductI
     externalId,
     canonicalUrl: canon,
     name,
+    description: plainText(node["description"]) ?? null,
     brand: brand ?? null,
     sellerId: null,
     sellerName: sellerRec ? asString(sellerRec["name"]) ?? null : null,
@@ -277,17 +278,23 @@ export function normalizeRipleyDetailNextData(html: string, sourceUrl: string): 
   if (regularCents == null && offerCents == null && cardCents == null) return null;
 
   const { variants, observed } = ripleyVariants(product);
+  const specs = {
+    ...specPairs(product["specifications"]),
+    ...specPairs(product["attributes"]),
+    ...specPairs(product["features"]),
+  };
 
   return {
     store: STORE,
     externalId,
     canonicalUrl: canon,
     name,
+    description: plainText(product["description"]) ?? plainText(product["longDescription"]) ?? null,
     brand: asString(product["brand"]) ?? null,
     sellerId: null,
     sellerName: null,
     sponsored: false,
-    attributes: {},
+    attributes: specs,
     categories: [],
     images: ripleyImages(product["images"]),
     variants,

@@ -181,59 +181,83 @@ export class CrawlPolicy {
   async fetchImage(rawUrl: string, options: { budget?: RequestBudget } = {}): Promise<PolicyImageResponse> {
     const u = await this.assertAllowed(rawUrl);
     const host = u.hostname;
-    if (this.circuit.isOpen(host)) {
-      throw new CircuitOpenError("circuit open for host", {
-        host,
-        cooldownMs: this.circuit.cooldownRemaining(host),
-      });
-    }
+    const startUrl = u.toString();
     options.budget?.consume();
-    const release = await this.scheduler.acquire(host, "image");
-    try {
-      let url = u.toString();
-      let response: RawImageResponse | undefined;
-      for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-        response = await this.imageFetch(url, {
-          headers: { "user-agent": this.userAgent },
-          redirect: "manual",
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (this.circuit.isOpen(host)) {
+        throw new CircuitOpenError("circuit open for host", {
+          host,
+          cooldownMs: this.circuit.cooldownRemaining(host),
         });
-        if (response.status >= 300 && response.status < 400 && response.headers["location"]) {
-          if (hop === MAX_REDIRECTS) throw new PolicyError("too many redirects", { url });
-          url = new URL(response.headers["location"], url).toString();
-          this.assertNavigable(url);
-          continue;
+      }
+      const release = await this.scheduler.acquire(host, "image");
+      try {
+        let url = startUrl;
+        let response: RawImageResponse | undefined;
+        for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+          response = await this.imageFetch(url, {
+            headers: { "user-agent": this.userAgent },
+            redirect: "manual",
+          });
+          if (response.status >= 300 && response.status < 400 && response.headers["location"]) {
+            if (hop === MAX_REDIRECTS) throw new PolicyError("too many redirects", { url });
+            url = new URL(response.headers["location"], url).toString();
+            this.assertNavigable(url);
+            continue;
+          }
+          break;
         }
-        break;
+        if (!response) throw new PolicyError("no image response", { url });
+        const mime = (response.headers["content-type"] ?? "").split(";")[0]?.trim() ?? "";
+
+
+        if (RETRYABLE.has(response.status)) {
+          const retryAfter = this.parseRetryAfter(response.headers["retry-after"]);
+          if (retryAfter !== undefined) this.scheduler.penalize(host, retryAfter);
+          if (attempt < MAX_ATTEMPTS) {
+            await this.clock.sleep(retryAfter ?? this.backoff(attempt));
+            continue;
+          }
+          // 429 (rate limiting) is expected on image CDNs — don't trip the circuit.
+          if (response.status !== 429) this.circuit.recordFailure(host);
+          throw new PolicyError(`image status ${response.status} after ${MAX_ATTEMPTS} attempts`, {
+            url,
+            status: response.status,
+          });
+        }
+
+        if (response.status < 200 || response.status >= 300) {
+          this.circuit.recordFailure(host);
+          throw new PolicyError(`image status ${response.status}`, { url, status: response.status });
+        }
+
+
+        if (!mime.startsWith("image/")) {
+          this.circuit.recordFailure(host);
+          throw new PolicyError("non-image content type", { url, mime });
+        }
+        if (response.bytes.byteLength > 10 * 1024 * 1024) {
+          this.circuit.recordFailure(host);
+          throw new PolicyError("image exceeds 10 MiB", { url, size: response.bytes.byteLength });
+        }
+        this.circuit.recordSuccess(host);
+        const digest = await crypto.subtle.digest("SHA-256", response.bytes);
+        const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+        return {
+          url,
+          status: response.status,
+          bytes: response.bytes,
+          mime,
+          sha256,
+          etag: response.headers["etag"] ?? null,
+          lastModified: response.headers["last-modified"] ?? null,
+        };
+      } finally {
+        release();
       }
-      if (!response) throw new PolicyError("no image response", { url });
-      if (response.status < 200 || response.status >= 300) {
-        this.circuit.recordFailure(host);
-        throw new PolicyError(`image status ${response.status}`, { url, status: response.status });
-      }
-      const mime = (response.headers["content-type"] ?? "").split(";")[0]?.trim() ?? "";
-      if (!mime.startsWith("image/")) {
-        this.circuit.recordFailure(host);
-        throw new PolicyError("non-image content type", { url, mime });
-      }
-      if (response.bytes.byteLength > 10 * 1024 * 1024) {
-        this.circuit.recordFailure(host);
-        throw new PolicyError("image exceeds 10 MiB", { url, size: response.bytes.byteLength });
-      }
-      this.circuit.recordSuccess(host);
-      const digest = await crypto.subtle.digest("SHA-256", response.bytes);
-      const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-      return {
-        url,
-        status: response.status,
-        bytes: response.bytes,
-        mime,
-        sha256,
-        etag: response.headers["etag"] ?? null,
-        lastModified: response.headers["last-modified"] ?? null,
-      };
-    } finally {
-      release();
     }
+    throw new PolicyError("unreachable", { url: startUrl });
   }
 
   /** Synchronous structural checks for a URL (host/scheme/private/safety). */
@@ -346,11 +370,11 @@ export class CrawlPolicy {
       } catch (err) {
         if (err instanceof PolicyError || err instanceof ChallengeDetectedError) throw err;
         lastError = err instanceof Error ? err : new Error(String(err));
-        this.circuit.recordFailure(host);
         if (attempt < MAX_ATTEMPTS) {
           await this.clock.sleep(this.backoff(attempt));
           continue;
         }
+        this.circuit.recordFailure(host);
         throw lastError;
       }
 
@@ -361,6 +385,7 @@ export class CrawlPolicy {
           status: response.status,
         });
       }
+
 
       if (response.status === 304 && cached) {
         const freshUntil = this.freshUntil(cls, response.headers, options.freshnessMs);
@@ -407,7 +432,6 @@ export class CrawlPolicy {
       }
 
       if (RETRYABLE.has(response.status)) {
-        this.circuit.recordFailure(host);
         const retryAfter = this.parseRetryAfter(response.headers["retry-after"]);
         if (retryAfter !== undefined) this.scheduler.penalize(host, retryAfter);
         lastError = new PolicyError(`retryable status ${response.status}`, {
@@ -417,6 +441,7 @@ export class CrawlPolicy {
           await this.clock.sleep(retryAfter ?? this.backoff(attempt));
           continue;
         }
+        this.circuit.recordFailure(host);
         throw lastError;
       }
 

@@ -102,6 +102,36 @@ Result (`--json` emits exactly one line on stdout; logs go to stderr):
 > exercise the pipeline against an injected response; it is **not** a way to
 > seed real offers.
 
+
+### Evidence-backed handoff for external agents
+
+Scrapito stops at scraper/data ownership. Selection rules, the consuming LLM,
+Discord, rendering, delivery, idempotency and retries belong to the **external
+agent**. The integration is deliberately two-step:
+
+```bash
+# 1. Run one caller-defined category target. Stdout is one InvocationResult.
+bun run ingest -- target run invocation.json
+# → {"invocationId":"external-42",...,"coverage":{"coverageId":17,...}}
+
+# 2. Read only the exact products sighted in coverage 17.
+curl 'http://127.0.0.1:3000/coverages/17/offers?limit=50'
+bun run ingest -- offers handoff 17 --limit 50 --api-base-url http://127.0.0.1:3000 --json
+```
+
+`CoverageOfferHandoff` fixes every offer to the price observation and immutable
+name/brand/canonical URL/seller snapshot captured by that coverage's sighting;
+a later run changing price or product metadata cannot leak into an older
+handoff. Its opaque cursor is coverage-bound. Partial coverage is returned as
+partial with boundary/stop reason intact.
+
+Migration `0009_product_sighting_identity_snapshot.sql` is additive. Run
+`bun run db:migrate` before producing new handoffs. Existing sightings are not
+backfilled from mutable `products`: a coverage containing a legacy sighting
+fails closed as `COVERAGE_HANDOFF_UNAVAILABLE`. This initially works where a
+coverage exists (category targets); search/legacy results with `coverage: null`
+also have no handoff.
+
 ---
 
 ## Querying offers
@@ -200,7 +230,9 @@ Invoke as `bun run ingest -- <args>` (or `bun run --filter @scrapito/ingest scra
 | `scrapers validate <fileOrId>` | no | offline static + fixture validation (no network/browser) |
 | `discover list` / `discover run <id>` | discover: yes | local-only reconnaissance; never auto-registers a scraper |
 | `run <scraperId> [opts]` | **yes** | synchronous ingestion — the only command that saves products |
+| `target run [file]` | **yes** | one typed target Invocation; category results include a handoff-ready `coverageId` |
 | `offers query [opts]` | no | offer search via `GET /offers` |
+| `offers handoff <coverageId> [opts]` | no | exact sighted data via `GET /coverages/:coverageId/offers` |
 
 Registered scrapers: `ripley-pe`, `falabella-pe` (`fixture-products` is
 test-only). Stores: `ripley-pe`, `falabella-pe`.
@@ -209,9 +241,9 @@ test-only). Stores: `ripley-pe`, `falabella-pe`.
 
 ## HTTP API reference
 
-All routes are `GET`. Responses are JSON envelopes: `{ data }` for single
-resources/lists, `{ data, nextCursor, facets }` for `/offers`, and
-`{ error: { code, message, details? } }` on failure.
+All routes are `GET`. Standard resources use `{ data }`; `/offers` uses
+`{ data, nextCursor, facets }`; the coverage handoff is its schema-valid
+`CoverageOfferHandoff`; failures use `{ error: { code, message, details? } }`.
 
 | Route | Returns |
 |---|---|
@@ -223,6 +255,7 @@ resources/lists, `{ data, nextCursor, facets }` for `/offers`, and
 | `/products/:id/prices` | price observations |
 | `/offers?...` | offer search (see filters above) |
 | `/offers/:productId/history` | offer/price history |
+| `/coverages/:coverageId/offers?cursor=&limit=` | exact evidence-backed offers sighted by one coverage |
 | `/updates?store=&cursor=&limit=` | recent ingestion runs |
 | `/freshness` | data age per store |
 | `/images/:sha256` | image bytes (64-hex sha) |
@@ -243,7 +276,7 @@ resources/lists, `{ data, nextCursor, facets }` for `/offers`, and
 | `SCRAP_HOST` / `SCRAP_PORT` | api | `127.0.0.1` / `3000` | API bind address |
 | `SCRAP_PUBLIC_READS` | api | `false` | must be exactly `true` to bind a non-loopback host |
 | `WEB_ORIGIN` | api | — | comma-separated exact origins allowed by CORS (GET/HEAD/OPTIONS only) |
-| `SCRAP_API_BASE_URL` | ingest (`offers query`) | `http://127.0.0.1:3000` | API base for the CLI |
+| `SCRAP_API_BASE_URL` | ingest (`offers query` / `offers handoff`) | `http://127.0.0.1:3000` | read-only API base for the CLI |
 | `API_BASE_URL` | web (server) | — | **required**; server-only Hono API base for SSR |
 | `VITE_PUBLIC_API_BASE_URL` | web (browser) | — | **required**; browser-visible Hono API base |
 

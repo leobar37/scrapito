@@ -33,12 +33,18 @@ export { encodeOfferCursor, decodeOfferCursor, fingerprintOfferSearch } from "./
 export type { OfferCursorKey } from "./offer-cursor.ts";
 export type {
   CurrentOfferRow,
+  CurrentPriceDropRow,
   ImageDestinationKind,
   ImageSourceRow,
   ImageSourceTargetRow,
   PriceRow,
+  PriceMovementRow,
   ProductRow,
+  ProductSightingRow,
   RunRow,
+  TargetCoverageRow,
+  TargetIdentityRow,
+  TargetMembershipRow,
   VariantImageRow,
   VariantRow,
 } from "../rows.ts";

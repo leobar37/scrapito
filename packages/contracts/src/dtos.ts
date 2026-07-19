@@ -63,6 +63,7 @@ export const ProductImageRefSchema = z.object({
 export type ProductImageRef = z.infer<typeof ProductImageRefSchema>;
 
 export const ProductDetailSchema = ProductSummarySchema.extend({
+  description: z.string().nullable(),
   attributes: z.record(z.unknown()),
   prices: z.array(PriceObservationSchema),
   images: z.array(ProductImageRefSchema),

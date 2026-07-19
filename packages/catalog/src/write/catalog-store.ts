@@ -12,10 +12,18 @@ import type { SQLQueryBindings } from "bun:sqlite";
 import type { CategoryInput, ImageInput, ProductInput, StoreId, VariantInput } from "@scrapito/contracts";
 import type { ImageDestinationKind, ImageSourceTargetRow, ImageSourceRow, PriceRow, ProductRow, VariantRow } from "../rows.ts";
 
+export interface SnapshotOptions {
+  /** Omit for legacy callers. No sighting is fabricated without valid coverage. */
+  coverageId?: number;
+}
+
 export interface SnapshotResult {
   productId: number;
   created: boolean;
   priceInserted: boolean;
+  priceObservationId: number;
+  sightingId: number | null;
+  sightingInserted: boolean;
   variantsUpserted: number;
   variantsDeactivated: number;
   imageTargetsLinked: number;
@@ -49,15 +57,29 @@ export class CatalogStore {
     store: StoreId,
     input: ProductInput,
     variants: readonly VariantInput[],
+    options: SnapshotOptions = {},
   ): SnapshotResult {
     const now = new Date().toISOString();
     const tx = this.db.transaction((): SnapshotResult => {
+      if (options.coverageId != null) {
+        this.assertCoverage(options.coverageId, runId, store);
+      }
       const { id: productId, created } = this.upsertProduct(store, input, now);
       for (const cat of input.categories) {
         const categoryId = this.upsertCategory(store, cat);
         this.linkProductCategory(productId, categoryId);
       }
-      const priceInserted = this.maybeInsertPrice(productId, input, now);
+      const price = this.maybeInsertPrice(productId, input, now);
+      const sighting =
+        options.coverageId == null
+          ? { id: null, inserted: false }
+          : this.recordSighting(
+              options.coverageId,
+              productId,
+              price.id,
+              now,
+              input,
+            );
 
       let imageTargetsLinked = 0;
       for (const [i, img] of input.images.entries()) {
@@ -78,9 +100,84 @@ export class CatalogStore {
         }
       }
 
-      return { productId, created, priceInserted, variantsUpserted, variantsDeactivated, imageTargetsLinked };
+      return {
+        productId,
+        created,
+        priceInserted: price.inserted,
+        priceObservationId: price.id,
+        sightingId: sighting.id,
+        sightingInserted: sighting.inserted,
+        variantsUpserted,
+        variantsDeactivated,
+        imageTargetsLinked,
+      };
     });
     return tx();
+  }
+
+  private assertCoverage(coverageId: number, runId: number, store: StoreId): void {
+    const valid = this.db
+      .query<IdRow, [number, number, StoreId]>(
+        `SELECT c.id
+           FROM target_coverages c
+           JOIN scrape_target_identities t ON t.id=c.target_id
+          WHERE c.id=? AND c.run_id=? AND c.status='running' AND t.store_id=?`,
+      )
+      .get(coverageId, runId, store);
+    if (!valid) {
+      throw new Error(`invalid coverage ${coverageId} for running run ${runId} and store ${store}`);
+    }
+  }
+
+  private recordSighting(
+    coverageId: number,
+    productId: number,
+    priceObservationId: number,
+    seenAt: string,
+    input: ProductInput,
+  ): { id: number; inserted: boolean } {
+    const existing = this.db
+      .query<IdRow, [number, number]>(
+        "SELECT id FROM product_sightings WHERE coverage_id=? AND product_id=?",
+      )
+      .get(coverageId, productId);
+    const row = this.db
+      .query<
+        IdRow,
+        [number, number, number, string, string | null, string, string | null, string, string | null, string | null, number]
+      >(
+        `INSERT INTO product_sightings
+           (coverage_id, product_id, price_observation_id, seen_at, source_hash,
+            name_snapshot, brand_snapshot, canonical_url_snapshot,
+            seller_id_snapshot, seller_name_snapshot, identity_snapshot_version)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(coverage_id, product_id) DO UPDATE SET
+           price_observation_id=excluded.price_observation_id,
+           seen_at=excluded.seen_at,
+           source_hash=excluded.source_hash,
+           name_snapshot=excluded.name_snapshot,
+           brand_snapshot=excluded.brand_snapshot,
+           canonical_url_snapshot=excluded.canonical_url_snapshot,
+           seller_id_snapshot=excluded.seller_id_snapshot,
+           seller_name_snapshot=excluded.seller_name_snapshot,
+           identity_snapshot_version=excluded.identity_snapshot_version
+         RETURNING id`,
+      )
+      .get(
+        coverageId,
+        productId,
+        priceObservationId,
+        seenAt,
+        input.sourceHash ?? null,
+        input.name,
+        input.brand ?? null,
+        input.canonicalUrl,
+        input.sellerId ?? null,
+        input.sellerName ?? null,
+        1,
+      );
+    if (!row) throw new Error("failed to persist product sighting");
+    return { id: row.id, inserted: existing == null };
   }
 
   private upsertProduct(store: StoreId, input: ProductInput, now: string): { id: number; created: boolean } {
@@ -91,12 +188,13 @@ export class CatalogStore {
     if (existing) {
       this.db
         .query(
-          `UPDATE products SET canonical_url=?, name=?, brand=?, seller_id=?, seller_name=?,
+          `UPDATE products SET canonical_url=?, name=?, description=?, brand=?, seller_id=?, seller_name=?,
              sponsored=?, attributes_json=?, source_hash=?, last_seen_at=? WHERE id=?`,
         )
         .run(
           input.canonicalUrl,
           input.name,
+          input.description ?? null,
           input.brand ?? null,
           input.sellerId ?? null,
           input.sellerName ?? null,
@@ -112,15 +210,16 @@ export class CatalogStore {
     const res = this.db
       .query(
         `INSERT INTO products
-           (store_id, external_id, canonical_url, name, brand, seller_id, seller_name,
+           (store_id, external_id, canonical_url, name, description, brand, seller_id, seller_name,
             sponsored, attributes_json, source_hash, first_seen_at, last_seen_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         store,
         input.externalId,
         input.canonicalUrl,
         input.name,
+        input.description ?? null,
         input.brand ?? null,
         input.sellerId ?? null,
         input.sellerName ?? null,
@@ -162,20 +261,27 @@ export class CatalogStore {
       .run(productId, categoryId);
   }
 
-  private maybeInsertPrice(productId: number, input: ProductInput, now: string): boolean {
+  private maybeInsertPrice(
+    productId: number,
+    input: ProductInput,
+    now: string,
+  ): { id: number; inserted: boolean } {
     const latest = this.db
       .query<PriceRow, SQLQueryBindings[]>(
         "SELECT * FROM price_observations WHERE product_id=? ORDER BY observed_at DESC, id DESC LIMIT 1",
       )
       .get(productId);
-    if (samePrice(latest ?? undefined, input.price)) return false;
-    this.db
-      .query(
+    if (samePrice(latest ?? undefined, input.price) && latest) {
+      return { id: latest.id, inserted: false };
+    }
+    const inserted = this.db
+      .query<IdRow, SQLQueryBindings[]>(
         `INSERT INTO price_observations
            (product_id, observed_at, regular_cents, offer_cents, card_cents, currency, seller_id, in_stock, raw_json)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?)
+         RETURNING id`,
       )
-      .run(
+      .get(
         productId,
         now,
         input.price.regularCents ?? null,
@@ -186,7 +292,8 @@ export class CatalogStore {
         input.price.inStock ? 1 : 0,
         input.price.raw !== undefined ? JSON.stringify(input.price.raw) : null,
       );
-    return true;
+    if (!inserted) throw new Error("failed to persist price observation");
+    return { id: inserted.id, inserted: true };
   }
 
   /** Upsert every valid variant seen this snapshot; when `variantsObserved` is

@@ -15,6 +15,24 @@ export interface PriceLike {
   cardCents: number | null;
 }
 
+export interface EffectivePriceDerivation {
+  effectiveCents: number | null;
+  priceAccess: PriceAccess | null;
+}
+
+/** Temporal effective price used by price movement history. Unlike
+ * `deriveOffer`, a regular-only row is a valid baseline. */
+export function deriveEffectivePrice(price: PriceLike): EffectivePriceDerivation {
+  const publicCandidate = price.offerCents ?? price.regularCents;
+  if (price.cardCents != null && (publicCandidate == null || price.cardCents < publicCandidate)) {
+    return { effectiveCents: price.cardCents, priceAccess: "card" };
+  }
+  if (publicCandidate != null) {
+    return { effectiveCents: publicCandidate, priceAccess: "public" };
+  }
+  return { effectiveCents: null, priceAccess: null };
+}
+
 export interface OfferDerivation {
   effectiveCents: number;
   priceAccess: PriceAccess;
@@ -34,30 +52,31 @@ export interface OfferDerivation {
 export function deriveOffer(price: PriceLike): OfferDerivation | null {
   if (price.offerCents == null && price.cardCents == null) return null;
 
-  const publicCandidate = price.offerCents ?? price.regularCents;
-  const cardCandidate = price.cardCents;
-
-  let effectiveCents: number;
-  let priceAccess: PriceAccess;
-  if (cardCandidate != null && (publicCandidate == null || cardCandidate < publicCandidate)) {
-    effectiveCents = cardCandidate;
-    priceAccess = "card";
-  } else {
-    // publicCandidate is guaranteed non-null here: if it were null, cardCandidate
-    // would have taken the branch above (since offerCents/cardCents not both null).
-    effectiveCents = publicCandidate as number;
-    priceAccess = "public";
-  }
+  const { effectiveCents, priceAccess } = deriveEffectivePrice(price);
+  // At least one promotional/card price exists, so deriveEffectivePrice cannot
+  // return a null effective value/access here.
+  const offerEffectiveCents = effectiveCents as number;
+  const offerPriceAccess = priceAccess as PriceAccess;
 
   let quality: OfferQuality = "promotional_price";
   let discountCents: number | null = null;
   let discountBps: number | null = null;
-  if (price.regularCents != null && price.regularCents > 0 && effectiveCents < price.regularCents) {
+  if (
+    price.regularCents != null &&
+    price.regularCents > 0 &&
+    offerEffectiveCents < price.regularCents
+  ) {
     quality = "verified_discount";
-    discountCents = price.regularCents - effectiveCents;
+    discountCents = price.regularCents - offerEffectiveCents;
     discountBps = Math.floor((discountCents * 10_000) / price.regularCents);
   }
-  return { effectiveCents, priceAccess, quality, discountCents, discountBps };
+  return {
+    effectiveCents: offerEffectiveCents,
+    priceAccess: offerPriceAccess,
+    quality,
+    discountCents,
+    discountBps,
+  };
 }
 
 /** Quote/escape a user search string into a literal (non-operator) FTS5 MATCH
@@ -111,6 +130,8 @@ export const OfferSearchInputSchema = z
     minEffectiveCents: CentsSchema.optional(),
     maxEffectiveCents: CentsSchema.optional(),
     minDiscountBps: z.number().int().min(0).max(10_000).optional(),
+    /** Caller-owned freshness boundary. Omit to preserve legacy reads. */
+    seenAfter: z.string().datetime().optional(),
     sort: OfferSortSchema.optional(),
     cursor: z.string().max(MAX_CURSOR_LENGTH).optional(),
     limit: z.number().int().positive().max(100).default(24),
@@ -172,6 +193,8 @@ export function decodeOfferSearchParams(params: URLSearchParams): OfferSearchInp
   const maxEffectiveCents = params.get("maxEffectiveCents");
   if (maxEffectiveCents !== null) raw.maxEffectiveCents = Number(maxEffectiveCents);
   const minDiscountBps = params.get("minDiscountBps");
+  const seenAfter = params.get("seenAfter");
+  if (seenAfter !== null) raw.seenAfter = seenAfter;
   if (minDiscountBps !== null) raw.minDiscountBps = Number(minDiscountBps);
   const sort = params.get("sort");
   if (sort !== null) raw.sort = sort;
@@ -205,6 +228,7 @@ export function encodeOfferSearchParams(input: OfferSearchInput): URLSearchParam
   if (input.minEffectiveCents != null) params.set("minEffectiveCents", String(input.minEffectiveCents));
   if (input.maxEffectiveCents != null) params.set("maxEffectiveCents", String(input.maxEffectiveCents));
   if (input.minDiscountBps != null) params.set("minDiscountBps", String(input.minDiscountBps));
+  if (input.seenAfter) params.set("seenAfter", input.seenAfter);
   if (input.sort) params.set("sort", input.sort);
   if (input.cursor) params.set("cursor", input.cursor);
   if (input.limit) params.set("limit", String(input.limit));

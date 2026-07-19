@@ -5,4 +5,8 @@ export * from "./variants.ts";
 export * from "./dtos.ts";
 export * from "./ingestion.ts";
 export * from "./offers.ts";
+export * from "./observations.ts";
+export * from "./coverage-handoff.ts";
+export * from "./invocation.ts";
+export * from "./maintenance.ts";
 export * from "./cursor.ts";

@@ -7,6 +7,8 @@ import { Hono } from "hono";
 import { join } from "node:path";
 import {
   StoreIdSchema,
+  CoverageOfferHandoffQuerySchema,
+  CoverageOfferHandoffSchema,
   ScrapError,
   decodeOfferSearchParams,
   toFtsMatchQuery,
@@ -129,6 +131,33 @@ export function createServer(reader: CatalogReader, config: ApiConfig): Hono {
     } catch (err) {
       if (err instanceof ScrapError) {
         return c.json({ error: { code: err.code, message: err.message, details: err.details } }, 400);
+      }
+      throw err;
+    }
+  });
+
+  api.get("/coverages/:coverageId/offers", (c) => {
+    const coverageId = Number(c.req.param("coverageId"));
+    if (!Number.isInteger(coverageId) || coverageId <= 0) {
+      return c.json({ error: { code: "BAD_REQUEST", message: "invalid coverageId" } }, 400);
+    }
+    const parsed = CoverageOfferHandoffQuerySchema.safeParse({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
+    if (!parsed.success) {
+      return c.json(
+        { error: { code: "BAD_REQUEST", message: "invalid handoff query", details: parsed.error.issues } },
+        400,
+      );
+    }
+    try {
+      const handoff = queries.getCoverageOfferHandoff(coverageId, parsed.data);
+      return c.json(CoverageOfferHandoffSchema.parse(handoff));
+    } catch (err) {
+      if (err instanceof ScrapError) {
+        const status = err.code === "COVERAGE_NOT_FOUND" || err.code === "COVERAGE_HANDOFF_UNAVAILABLE" ? 404 : 400;
+        return c.json({ error: { code: err.code, message: err.message, details: err.details } }, status);
       }
       throw err;
     }

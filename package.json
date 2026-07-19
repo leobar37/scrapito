@@ -9,6 +9,8 @@
     "dev:web": "bun run --filter @scrapito/web dev",
     "build:web": "bun run --filter @scrapito/web build",
     "ingest": "bun run --filter @scrapito/ingest scrap-ingest",
+    "agent": "bun run apps/agent/src/cli.ts",
+    "build:agent": "bun run --filter @scrapito/agent build",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun run --filter '*' test && bun run test:integration",
     "test:integration": "bun test tests/integration",

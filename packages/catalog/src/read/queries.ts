@@ -9,11 +9,27 @@ import {
   encodeCursor,
   toFtsMatchQuery,
   deriveOffer,
+  CoverageOfferHandoffQuerySchema,
+  CoverageOfferHandoffSchema,
+  CurrentPriceDropSchema,
+  PriceMovementSchema,
+  ProductSightingSchema,
+  TargetCoverageSchema,
+  TargetIdentityInputSchema,
+  TargetIdentitySchema,
+  TargetMembershipSchema,
   type OfferFacets,
   type OfferHistory,
   type OfferSearchInput,
   type OfferSearchPage,
   type OfferSummary,
+  type CurrentPriceDrop,
+  type PriceMovement,
+  type ProductSighting,
+  type TargetCoverage,
+  type TargetIdentity,
+  type TargetMembership,
+  type CoverageOfferHandoff,
   type Page,
   type PriceObservation,
   type ProductDetail,
@@ -23,9 +39,25 @@ import {
   type StoreFreshness,
   type StoreId,
   type UpdateRunSummary,
+  ScrapError,
 } from "@scrapito/contracts";
-import type { CurrentOfferRow, ImageSourceRow, PriceRow, ProductRow, RunRow, VariantImageRow, VariantRow } from "../rows.ts";
+import type {
+  CurrentOfferRow,
+  CurrentPriceDropRow,
+  ImageSourceRow,
+  PriceMovementRow,
+  PriceRow,
+  ProductRow,
+  ProductSightingRow,
+  RunRow,
+  TargetCoverageRow,
+  TargetIdentityRow,
+  TargetMembershipRow,
+  VariantImageRow,
+  VariantRow,
+} from "../rows.ts";
 import { decodeOfferCursor, encodeOfferCursor, type OfferCursorKey } from "./offer-cursor.ts";
+import { decodeCoverageOfferCursor, encodeCoverageOfferCursor } from "./coverage-offer-cursor.ts";
 
 const MAX_LIMIT = 100;
 
@@ -33,6 +65,25 @@ interface StoreRow {
   id: StoreId;
   name: string;
   base_url: string;
+}
+
+interface CoverageHandoffMetaRow extends TargetCoverageRow {
+  invocation_id: string | null;
+  store_id: StoreId;
+}
+
+interface CoverageHandoffOfferRow extends PriceMovementRow {
+  sighting_id: number;
+  coverage_id: number;
+  seen_at: string;
+  sighting_source_hash: string | null;
+  store_id: StoreId;
+  external_id: string;
+  name_snapshot: string | null;
+  brand_snapshot: string | null;
+  canonical_url_snapshot: string | null;
+  seller_id_snapshot: string | null;
+  seller_name_snapshot: string | null;
 }
 
 function clampLimit(limit: number | undefined): number {
@@ -46,6 +97,15 @@ function parseAttributes(json: string): Record<string, unknown> {
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
   } catch {
     return {};
+  }
+}
+
+function parseNullableJson(json: string | null): unknown | null {
+  if (json == null) return null;
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
   }
 }
 
@@ -153,7 +213,7 @@ export class CatalogQueries {
     const prices = this.getPrices(id);
     const images = this.getImages(id);
     const variants = this.getVariants(id);
-    return { ...summary, attributes: parseAttributes(p.attributes_json), prices, images, variants };
+    return { ...summary, description: p.description ?? null, attributes: parseAttributes(p.attributes_json), prices, images, variants };
   }
 
   getPrices(productId: number): PriceObservation[] {
@@ -334,6 +394,10 @@ export class CatalogQueries {
       params.push(...input.priceAccess);
     }
     if (input.inStock) where.push("co.in_stock = 1");
+    if (input.seenAfter) {
+      where.push("co.last_seen_at >= ?");
+      params.push(input.seenAfter);
+    }
     if (input.minEffectiveCents != null) {
       where.push("co.effective_cents >= ?");
       params.push(input.minEffectiveCents);
@@ -517,5 +581,346 @@ export class CatalogQueries {
       };
     });
     return { observations, publicHistoricalLowCents: publicLow, cardHistoricalLowCents: cardLow };
+  }
+
+  listTargets(options: { store?: StoreId; limit?: number } = {}): TargetIdentity[] {
+    const limit = clampLimit(options.limit);
+    const rows = options.store
+      ? this.db
+          .query<TargetIdentityRow, [StoreId, number]>(
+            "SELECT * FROM scrape_target_identities WHERE store_id=? ORDER BY id DESC LIMIT ?",
+          )
+          .all(options.store, limit)
+      : this.db
+          .query<TargetIdentityRow, [number]>(
+            "SELECT * FROM scrape_target_identities ORDER BY id DESC LIMIT ?",
+          )
+          .all(limit);
+    return rows.map((row) => this.toTargetIdentity(row));
+  }
+
+  getTarget(targetId: number): TargetIdentity | null {
+    const row = this.db
+      .query<TargetIdentityRow, [number]>(
+        "SELECT * FROM scrape_target_identities WHERE id=?",
+      )
+      .get(targetId);
+    return row ? this.toTargetIdentity(row) : null;
+  }
+
+  private toTargetIdentity(row: TargetIdentityRow): TargetIdentity {
+    return TargetIdentitySchema.parse({
+      id: row.id,
+      storeId: row.store_id,
+      identityKey: row.identity_key,
+      target: TargetIdentityInputSchema.parse(JSON.parse(row.target_json)),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    });
+  }
+
+  listTargetCoverages(targetId: number, options: { limit?: number } = {}): TargetCoverage[] {
+    const rows = this.db
+      .query<TargetCoverageRow, [number, number]>(
+        "SELECT * FROM target_coverages WHERE target_id=? ORDER BY started_at DESC, id DESC LIMIT ?",
+      )
+      .all(targetId, clampLimit(options.limit));
+    return rows.map((row) =>
+      TargetCoverageSchema.parse({
+        id: row.id,
+        runId: row.run_id,
+        targetId: row.target_id,
+        status: row.status,
+        authoritative: row.authoritative === 1,
+        startedAt: row.started_at,
+        finishedAt: row.finished_at,
+        maxRequests: row.max_requests,
+        maxDurationMs: row.max_duration_ms,
+        requestedPages: parseNullableJson(row.requested_pages_json),
+        requestsMade: row.requests_made,
+        productsSeen: row.products_seen,
+        duplicatesSeen: row.duplicates_seen,
+        productsRejected: row.products_rejected,
+        stopReason: row.stop_reason,
+        boundary: parseNullableJson(row.boundary_json),
+      }),
+    );
+  }
+
+  getCoverageOfferHandoff(
+    coverageId: number,
+    options: { cursor?: string; limit?: number } = {},
+  ): CoverageOfferHandoff {
+    const input = CoverageOfferHandoffQuerySchema.parse(options);
+    const meta = this.db
+      .query<CoverageHandoffMetaRow, [number]>(
+        `SELECT c.*, r.invocation_id, r.store_id
+           FROM target_coverages c
+           JOIN scraper_runs r ON r.id=c.run_id
+           JOIN scrape_target_identities t ON t.id=c.target_id AND t.store_id=r.store_id
+          WHERE c.id=?`,
+      )
+      .get(coverageId);
+    if (!meta) {
+      throw new ScrapError("COVERAGE_NOT_FOUND", `coverage not found: ${coverageId}`);
+    }
+    if (meta.invocation_id == null) {
+      throw new ScrapError(
+        "COVERAGE_HANDOFF_UNAVAILABLE",
+        `coverage ${coverageId} belongs to a legacy run without invocationId`,
+      );
+    }
+    const missingIdentitySnapshot = this.db
+      .query<{ id: number }, [number]>(
+        `SELECT id
+           FROM product_sightings
+          WHERE coverage_id=?
+            AND (
+              identity_snapshot_version IS NOT 1
+              OR name_snapshot IS NULL
+              OR canonical_url_snapshot IS NULL
+            )
+          LIMIT 1`,
+      )
+      .get(coverageId);
+    if (missingIdentitySnapshot) {
+      throw new ScrapError(
+        "COVERAGE_HANDOFF_UNAVAILABLE",
+        `coverage ${coverageId} contains legacy sightings without immutable identity snapshots`,
+      );
+    }
+
+    const cursor = input.cursor ? decodeCoverageOfferCursor(input.cursor, coverageId) : null;
+    const keyset = cursor
+      ? " AND (ps.product_id > ? OR (ps.product_id = ? AND ps.id > ?))"
+      : "";
+    const params: SQLQueryBindings[] = [coverageId];
+    if (cursor) params.push(cursor.productId, cursor.productId, cursor.sightingId);
+    params.push(input.limit + 1);
+
+    const rows = this.db
+      .query<CoverageHandoffOfferRow, SQLQueryBindings[]>(
+        `SELECT m.*,
+                ps.id AS sighting_id,
+                ps.coverage_id,
+                ps.seen_at,
+                ps.source_hash AS sighting_source_hash,
+                p.store_id,
+                p.external_id,
+                ps.name_snapshot,
+                ps.brand_snapshot,
+                ps.canonical_url_snapshot,
+                ps.seller_id_snapshot,
+                ps.seller_name_snapshot
+           FROM product_sightings ps
+           JOIN products p ON p.id=ps.product_id
+           JOIN price_observation_movements m
+             ON m.id=ps.price_observation_id
+            AND m.product_id=ps.product_id
+          WHERE ps.coverage_id=?${keyset}
+          ORDER BY ps.product_id ASC, ps.id ASC
+          LIMIT ?`,
+      )
+      .all(...params);
+    const hasMore = rows.length > input.limit;
+    const page = rows.slice(0, input.limit);
+    const last = page[page.length - 1];
+
+    return CoverageOfferHandoffSchema.parse({
+      invocationId: meta.invocation_id,
+      runId: meta.run_id,
+      site: meta.store_id,
+      coverage: {
+        coverageId: meta.id,
+        status: meta.status,
+        authoritative: meta.authoritative === 1,
+        startedAt: meta.started_at,
+        finishedAt: meta.finished_at,
+        boundary: parseNullableJson(meta.boundary_json),
+        stopReason: meta.stop_reason,
+      },
+      data: page.map((row) => {
+        const currentHistoricalLowCents =
+          row.effective_cents == null
+            ? row.prior_historical_low_cents
+            : row.prior_historical_low_cents == null
+              ? row.effective_cents
+              : Math.min(row.prior_historical_low_cents, row.effective_cents);
+        return {
+          productId: row.product_id,
+          storeId: row.store_id,
+          externalId: row.external_id,
+          name: row.name_snapshot,
+          brand: row.brand_snapshot,
+          seller: {
+            id: row.seller_id_snapshot,
+            name: row.seller_name_snapshot,
+          },
+          url: row.canonical_url_snapshot,
+          currency: "PEN",
+          price: {
+            observationId: row.id,
+            observedAt: row.observed_at,
+            regularCents: row.regular_cents,
+            offerCents: row.offer_cents,
+            cardCents: row.card_cents,
+            effectiveCents: row.effective_cents,
+            access: row.price_access,
+            inStock: row.in_stock === 1,
+          },
+          movement: {
+            previousObservationId: row.previous_price_observation_id,
+            previousEffectiveCents: row.previous_effective_cents,
+            previousAccess: row.previous_price_access,
+            priorHistoricalLowCents: row.prior_historical_low_cents,
+            currentHistoricalLowCents,
+            isPriceDrop: row.is_price_drop === 1,
+            isHistoricalLow: row.is_historical_low === 1,
+            sellerChanged: row.seller_changed === 1,
+          },
+          evidence: {
+            sightingId: row.sighting_id,
+            seenAt: row.seen_at,
+            coverageId: row.coverage_id,
+            sourceHash: row.sighting_source_hash,
+          },
+        };
+      }),
+      nextCursor:
+        hasMore && last
+          ? encodeCoverageOfferCursor({
+              coverageId,
+              productId: last.product_id,
+              sightingId: last.sighting_id,
+            })
+          : null,
+    });
+  }
+
+  listProductSightings(productId: number, options: { limit?: number } = {}): ProductSighting[] {
+    const rows = this.db
+      .query<ProductSightingRow, [number, number]>(
+        "SELECT * FROM product_sightings WHERE product_id=? ORDER BY seen_at DESC, id DESC LIMIT ?",
+      )
+      .all(productId, clampLimit(options.limit));
+    return rows.map((row) =>
+      ProductSightingSchema.parse({
+        id: row.id,
+        coverageId: row.coverage_id,
+        productId: row.product_id,
+        priceObservationId: row.price_observation_id,
+        seenAt: row.seen_at,
+        sourceHash: row.source_hash,
+      }),
+    );
+  }
+
+  listTargetMemberships(
+    targetId: number,
+    options: { includeInactive?: boolean; limit?: number } = {},
+  ): TargetMembership[] {
+    const inactiveClause = options.includeInactive ? "" : " AND inactive_at IS NULL";
+    const rows = this.db
+      .query<TargetMembershipRow, SQLQueryBindings[]>(
+        `SELECT * FROM target_product_memberships
+          WHERE target_id=?${inactiveClause}
+          ORDER BY product_id LIMIT ?`,
+      )
+      .all(targetId, clampLimit(options.limit));
+    return rows.map((row) =>
+      TargetMembershipSchema.parse({
+        targetId: row.target_id,
+        productId: row.product_id,
+        firstSeenAt: row.first_seen_at,
+        lastSeenAt: row.last_seen_at,
+        lastSeenCoverageId: row.last_seen_coverage_id,
+        consecutiveCompleteMisses: row.consecutive_complete_misses,
+        inactiveAt: row.inactive_at,
+        inactivityReason: row.inactivity_reason,
+      }),
+    );
+  }
+
+  getPriceMovements(productId: number): PriceMovement[] {
+    const rows = this.db
+      .query<PriceMovementRow, [number]>(
+        `SELECT * FROM price_observation_movements
+          WHERE product_id=? ORDER BY observed_at ASC, id ASC`,
+      )
+      .all(productId);
+    return rows.map((row) => this.toPriceMovement(row));
+  }
+
+  searchCurrentPriceDrops(
+    options: { store?: StoreId; seenAfter?: string; limit?: number } = {},
+  ): CurrentPriceDrop[] {
+    const limit = clampLimit(options.limit);
+    const clauses: string[] = [];
+    const params: SQLQueryBindings[] = [];
+    if (options.store) {
+      clauses.push("p.store_id=?");
+      params.push(options.store);
+    }
+    if (options.seenAfter) {
+      clauses.push("d.last_sighted_at>=?");
+      params.push(options.seenAfter);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const sql = `SELECT d.*, p.store_id, p.external_id, p.name, p.brand,
+                        p.seller_name, p.canonical_url
+                   FROM current_price_drops d
+                   JOIN products p ON p.id=d.product_id
+                   ${where}
+                  ORDER BY d.observed_at DESC, d.id DESC LIMIT ?`;
+    const rows = this.db
+      .query<
+        CurrentPriceDropRow & {
+          store_id: StoreId;
+          external_id: string;
+          name: string;
+          brand: string | null;
+          seller_name: string | null;
+          canonical_url: string;
+        },
+        SQLQueryBindings[]
+      >(sql)
+      .all(...params, limit);
+    return rows.map((row) =>
+      CurrentPriceDropSchema.parse({
+        ...this.toPriceMovement(row),
+        storeId: row.store_id,
+        externalId: row.external_id,
+        name: row.name,
+        brand: row.brand,
+        sellerName: row.seller_name,
+        canonicalUrl: row.canonical_url,
+        lastSightedAt: row.last_sighted_at,
+        coverageId: row.coverage_id,
+      }),
+    );
+  }
+
+  private toPriceMovement(row: PriceMovementRow): PriceMovement {
+    return PriceMovementSchema.parse({
+      priceObservationId: row.id,
+      productId: row.product_id,
+      observedAt: row.observed_at,
+      regularCents: row.regular_cents,
+      offerCents: row.offer_cents,
+      cardCents: row.card_cents,
+      sellerId: row.seller_id,
+      inStock: row.in_stock === 1,
+      effectiveCents: row.effective_cents,
+      priceAccess: row.price_access,
+      previousPriceObservationId: row.previous_price_observation_id,
+      previousEffectiveCents: row.previous_effective_cents,
+      previousPriceAccess: row.previous_price_access,
+      previousSellerId: row.previous_seller_id,
+      previousInStock: row.previous_in_stock == null ? null : row.previous_in_stock === 1,
+      priorHistoricalLowCents: row.prior_historical_low_cents,
+      isPriceDrop: row.is_price_drop === 1,
+      isHistoricalLow: row.is_historical_low === 1,
+      sellerChanged: row.seller_changed === 1,
+    });
   }
 }

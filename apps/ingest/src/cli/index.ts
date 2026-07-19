@@ -7,25 +7,42 @@
  * no agent-browser).
  */
 import { Command } from "commander";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import {
   ProductInputSchema,
+  InvocationContextSchema,
+  InvocationResultSchema,
+  CoverageOfferHandoffQuerySchema,
+  CoverageOfferHandoffSchema,
+  RetentionRequestSchema,
   ScrapError,
   WriterLockedError,
   decodeOfferSearchParams,
   encodeOfferSearchParams,
   type IngestionRunResult,
+  type InvocationContext,
+  type InvocationResult,
+  type RetentionRequest,
   type Pages,
 } from "@scrapito/contracts";
 import { openCatalogReader } from "@scrapito/catalog/read";
 import { WriterLease, migrationsPending, openWriterDatabase, runMigrations } from "@scrapito/catalog/write";
 import { loadConfig } from "../config.ts";
-import { buildIngestRunner, openIngestWriter } from "../app/services.ts";
+import { buildIngestRunner, openIngestWriter, type OpenIngestWriterResult } from "../app/services.ts";
 import { getScraper, listScrapers } from "../scrapers/registry.ts";
+import { runScraperCanary } from "../scrapers/canary.ts";
 import { getDiscovery, listDiscoveries, FsDiscoveryArtifacts } from "../discovery/index.ts";
 import { BrowserManager } from "../browser/browser-manager.ts";
 import { CrawlPolicy, defaultHttpFetch, defaultImageFetch } from "../policy/crawl-policy.ts";
 import { createLogger } from "../util/logger.ts";
+import {
+  adaptTargetInvocation,
+  type AdaptedTargetInvocation,
+  CAPABILITY_DEFINITIONS,
+  CAPABILITY_SUPPORT_MATRIX,
+  SITE_DEFINITIONS,
+  STRATEGY_DEFINITIONS,
+} from "../targets/definitions.ts";
 
 function parsePages(value: string | undefined): Pages | undefined {
   if (!value) return undefined;
@@ -80,6 +97,52 @@ db.command("reset")
     runMigrations(database);
     database.close();
     console.log("database reset");
+  });
+
+// ---- maintenance (explicit one-shot administrative capabilities) ----
+const maintenance = program.command("maintenance").description("explicit one-shot catalog maintenance");
+maintenance
+  .command("retention")
+  .description("compact one bounded batch of redundant sightings; never schedules another batch")
+  .requiredOption("--invocation-id <id>", "idempotency/audit identifier")
+  .requiredOption("--sightings-before <iso>", "compact redundant sightings strictly before this ISO instant")
+  .requiredOption("--batch-size <n>", "maximum sightings to compact", (value) => Number(value))
+  .option("--dry-run", "audit candidates without deleting sightings")
+  .action((opts: Record<string, unknown>) => {
+    const parsed = RetentionRequestSchema.safeParse({
+      schemaVersion: 1,
+      invocationId: opts.invocationId,
+      dryRun: Boolean(opts.dryRun),
+      sightingsBefore: opts.sightingsBefore,
+      batchSize: opts.batchSize,
+    });
+    if (!parsed.success) {
+      jsonErrorAndExit(true, "BAD_RETENTION_REQUEST", "invalid retention request", parsed.error.issues);
+    }
+    const request: RetentionRequest = parsed.data;
+    const config = loadConfig();
+    let opened: OpenIngestWriterResult | undefined;
+    try {
+      opened = openIngestWriter(config, { requireMigrated: true });
+      const lease = opened.writer.writerLease;
+      const token = lease.acquire();
+      lease.startHeartbeat();
+      const result = opened.writer.retention.run(request, token);
+      console.log(JSON.stringify(result));
+    } catch (err) {
+      console.log(
+        JSON.stringify({
+          error: {
+            code: err instanceof WriterLockedError ? "WRITER_LOCKED" : "RETENTION_FAILED",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }),
+      );
+      process.exitCode = 1;
+    } finally {
+      opened?.writer.writerLease.release();
+      opened?.close();
+    }
   });
 
 // ---- browser (local-only) ----
@@ -148,6 +211,14 @@ scrapers
     }
     console.log(JSON.stringify({ ok: true, scraper: scraper.id, products: products.length, valid }));
   });
+scrapers
+  .command("canary <scraperId>")
+  .description("run a registered scraper against checked-in fixtures using temporary DB/storage/discovery")
+  .action(async (scraperId: string) => {
+    const result = await runScraperCanary(scraperId);
+    console.log(JSON.stringify(result));
+    if (!result.ok) process.exitCode = 1;
+  });
 
 // ---- discover (local-only reconnaissance; never registers/promotes anything) ----
 const discover = program.command("discover").description("local-only browser reconnaissance (never auto-registers)");
@@ -210,6 +281,171 @@ discover
     }
   });
 
+// ---- target (typed, deterministic one-shot boundary for external callers) ----
+const target = program.command("target").description("typed target capability contract");
+target.command("matrix").description("print the closed site/strategy/capability matrix").action(() => {
+  console.log(
+    JSON.stringify({
+      schemaVersion: 1,
+      sites: SITE_DEFINITIONS,
+      strategies: STRATEGY_DEFINITIONS,
+      capabilities: CAPABILITY_DEFINITIONS,
+      support: CAPABILITY_SUPPORT_MATRIX,
+    }),
+  );
+});
+target
+  .command("run [file]")
+  .description("run one typed InvocationContext from a JSON file or stdin (-); emits one InvocationResult line")
+  .action(async (file: string | undefined) => {
+    let raw: unknown;
+    try {
+      const text = file && file !== "-" ? readFileSync(file, "utf8") : await Bun.stdin.text();
+      raw = JSON.parse(text);
+    } catch (err) {
+      jsonErrorAndExit(true, "BAD_MANIFEST", err instanceof Error ? err.message : String(err));
+    }
+
+    const parsed = InvocationContextSchema.safeParse(raw);
+    if (!parsed.success) {
+      jsonErrorAndExit(true, "BAD_MANIFEST", "invalid InvocationContext", parsed.error.issues);
+    }
+    const invocation: InvocationContext = parsed.data;
+    const zeroUsage: InvocationResult["usage"] = {
+      requests: 0,
+      durationMs: 0,
+      writerDurationMs: 0,
+      productsSaved: 0,
+      productsSeen: 0,
+      productsRejected: 0,
+      duplicatesSeen: 0,
+      imagesDownloaded: 0,
+      llm: null,
+    };
+
+    let adapted: AdaptedTargetInvocation;
+    try {
+      // This gate is deliberately before config, DB, lease, CrawlPolicy, or network.
+      adapted = adaptTargetInvocation(invocation);
+    } catch (err) {
+      const result = InvocationResultSchema.parse({
+        schemaVersion: 1,
+        invocationId: invocation.invocationId,
+        status: "rejected",
+        site: invocation.site,
+        strategy: invocation.strategy,
+        capability: invocation.intent,
+        run: null,
+        coverage: null,
+        artifacts: [],
+        usage: zeroUsage,
+        error: {
+          code: err instanceof ScrapError ? err.code : "UNSUPPORTED_INVOCATION",
+          message: err instanceof Error ? err.message : String(err),
+          ...(err instanceof ScrapError && err.details !== undefined ? { details: err.details } : {}),
+        },
+      });
+      console.log(JSON.stringify(result));
+      process.exitCode = 1;
+      return;
+    }
+
+    const startedMs = Date.now();
+    let writerStartedMs = startedMs;
+    let opened: OpenIngestWriterResult | undefined;
+    let lease: WriterLease | undefined;
+    try {
+      const config = loadConfig();
+      if (!config.userAgent) throw new ScrapError("POLICY_DENIED", "SCRAP_USER_AGENT must be set to run scrapers");
+      opened = openIngestWriter(config, { requireMigrated: true });
+      lease = new WriterLease(opened.writer.db);
+      lease.acquire();
+      lease.startHeartbeat();
+      opened.writer.runs.failStaleRunning("ingest_restarted");
+
+      const scraper = getScraper(adapted.scraperId);
+      if (!scraper) throw new ScrapError("INVALID_SITE_DEFINITION", `unknown registered scraper: ${adapted.scraperId}`);
+      const { runner } = buildIngestRunner(config, opened.writer, opened.logger);
+      writerStartedMs = Date.now();
+      const outcome = await runner.run(scraper, adapted.params, adapted.runOptions);
+      const finishedMs = Date.now();
+      const result = InvocationResultSchema.parse({
+        schemaVersion: 1,
+        invocationId: invocation.invocationId,
+        status: outcome.status,
+        site: invocation.site,
+        strategy: invocation.strategy,
+        capability: invocation.intent,
+        run: {
+          runId: outcome.runId,
+          scraperId: scraper.id,
+          status: outcome.status,
+          startedAt: outcome.startedAt,
+          finishedAt: outcome.finishedAt,
+        },
+        coverage:
+          outcome.coverageId == null
+            ? null
+            : {
+                coverageId: outcome.coverageId,
+                status: outcome.coverageStatus,
+                authoritative: outcome.coverageAuthoritative,
+                boundary: outcome.coverageBoundary,
+                requests: outcome.requestsMade,
+                productsSeen: outcome.productsSeen,
+                duplicatesSeen: outcome.duplicatesSeen,
+                productsRejected: outcome.productsRejected,
+                stopReason: outcome.coverageStopReason,
+              },
+        artifacts: [],
+        usage: {
+          requests: outcome.requestsMade,
+          durationMs: Math.max(0, finishedMs - startedMs),
+          writerDurationMs: outcome.writerDurationMs,
+          productsSaved: outcome.productsSaved,
+          productsSeen: outcome.productsSeen,
+          productsRejected: outcome.productsRejected,
+          duplicatesSeen: outcome.duplicatesSeen,
+          imagesDownloaded: outcome.imagesDownloaded,
+          llm: null,
+        },
+        error:
+          outcome.status === "failed"
+            ? { code: "SCRAPE_FAILED", message: outcome.error ?? "scrape failed without a diagnostic" }
+            : null,
+      });
+      console.log(JSON.stringify(result));
+      process.exitCode = outcome.status === "failed" ? 1 : 0;
+    } catch (err) {
+      const finishedMs = Date.now();
+      const result = InvocationResultSchema.parse({
+        schemaVersion: 1,
+        invocationId: invocation.invocationId,
+        status: "failed",
+        site: invocation.site,
+        strategy: invocation.strategy,
+        capability: invocation.intent,
+        run: null,
+        coverage: null,
+        artifacts: [],
+        usage: {
+          ...zeroUsage,
+          durationMs: Math.max(0, finishedMs - startedMs),
+          writerDurationMs: opened ? Math.max(0, finishedMs - writerStartedMs) : 0,
+        },
+        error: {
+          code: err instanceof ScrapError ? err.code : err instanceof WriterLockedError ? "WRITER_LOCKED" : "INTERNAL",
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+      console.log(JSON.stringify(result));
+      process.exitCode = 1;
+    } finally {
+      lease?.release();
+      opened?.close();
+    }
+  });
+
 // ---- run (synchronous ingestion; the only way to write products) ----
 program
   .command("run <scraperId>")
@@ -219,6 +455,7 @@ program
   .option("--max-requests <n>", "max requests", (v) => Number(v))
   .option("--max-duration <ms>", "max duration ms", (v) => Number(v))
   .option("--no-images", "skip image downloads")
+  .option("--detail", "follow each product's detail page for full gallery, variants, and description")
   .option("--json", "emit exactly one JSON result line on stdout; logs go to stderr")
   .action(async (scraperId: string, opts: Record<string, unknown>) => {
     const json = Boolean(opts.json);
@@ -230,6 +467,7 @@ program
       category: opts.category as string | undefined,
       search: opts.search as string | undefined,
       pages: parsePages(opts.pages as string | undefined),
+      detail: Boolean(opts.detail),
     };
     const parsed = scraper.paramsSchema.safeParse(params);
     if (!parsed.success) {
@@ -269,6 +507,12 @@ program
         maxRequests: (opts.maxRequests as number | undefined) ?? scraper.defaults.maxRequests,
         maxDurationMs: (opts.maxDuration as number | undefined) ?? scraper.defaults.maxDurationMs,
         downloadImages: opts.images !== false,
+        target:
+          typeof params.category === "string"
+            ? { kind: "category", externalId: params.category }
+            : params.search == null
+              ? { kind: "homepage" }
+              : undefined,
       });
 
       if (outcome.status === "failed" && !outcome.error) {
@@ -301,7 +545,58 @@ program
   });
 
 // ---- offers query (read-only convenience mirroring GET /offers) ----
-const offers = program.command("offers").description("read-only offer search (mirrors GET /offers)");
+const offers = program.command("offers").description("read-only offer data");
+offers
+  .command("handoff <coverageId>")
+  .description("fetch the exact evidence-backed offer set sighted in one coverage")
+  .option("--limit <n>", "page size (1-100)")
+  .option("--cursor <cursor>", "opaque coverage-bound cursor")
+  .option("--api-base-url <url>", "API base URL", process.env.SCRAP_API_BASE_URL ?? "http://127.0.0.1:3000")
+  .option("--json", "emit exactly one JSON line")
+  .action(async (coverageIdRaw: string, opts: Record<string, unknown>) => {
+    const coverageId = Number(coverageIdRaw);
+    if (!Number.isInteger(coverageId) || coverageId <= 0) {
+      jsonErrorAndExit(true, "BAD_REQUEST", "coverageId must be a positive integer");
+    }
+    const parsedQuery = CoverageOfferHandoffQuerySchema.safeParse({
+      cursor: opts.cursor,
+      limit: opts.limit,
+    });
+    if (!parsedQuery.success) {
+      jsonErrorAndExit(true, "BAD_REQUEST", "invalid handoff query", parsedQuery.error.issues);
+    }
+
+    let url = "";
+    try {
+      const base = String(opts.apiBaseUrl).replace(/\/$/, "");
+      const requestUrl = new URL(`${base}/coverages/${coverageId}/offers`);
+      requestUrl.searchParams.set("limit", String(parsedQuery.data.limit));
+      if (parsedQuery.data.cursor) requestUrl.searchParams.set("cursor", parsedQuery.data.cursor);
+      url = requestUrl.toString();
+    } catch {
+      jsonErrorAndExit(true, "BAD_REQUEST", "invalid API base URL");
+    }
+
+    let response: Response;
+    let body: unknown;
+    try {
+      response = await fetch(url);
+      body = await response.json();
+    } catch (err) {
+      jsonErrorAndExit(true, "API_REQUEST_FAILED", err instanceof Error ? err.message : String(err));
+    }
+    if (!response.ok) {
+      console.log(JSON.stringify(body));
+      process.exitCode = 1;
+      return;
+    }
+    const handoff = CoverageOfferHandoffSchema.safeParse(body);
+    if (!handoff.success) {
+      jsonErrorAndExit(true, "BAD_API_RESPONSE", "API returned an invalid CoverageOfferHandoff", handoff.error.issues);
+    }
+    console.log(JSON.stringify(handoff.data));
+  });
+
 offers
   .command("query")
   .option("--query <q>", "search text")
