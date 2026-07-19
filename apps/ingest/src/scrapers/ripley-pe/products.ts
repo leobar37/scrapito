@@ -26,9 +26,13 @@ const paramsSchema = z.object({
     .optional(),
   /** Follow each product's detail page for full gallery, variants, and description. */
   detail: z.boolean().optional(),
+  /** Scrape the storefront homepage once and pass its SSR payload through the
+   *  list normalizer. Useful for daily homepage snapshots. */
+  home: z.boolean().optional(),
 });
 function listUrls(params: z.infer<typeof paramsSchema>): string[] {
   if (params.urls && params.urls.length > 0) return params.urls;
+  if (params.home) return [`${BASE}/`];
   const pages = resolvePages(params.pages);
   if (params.search) {
     const term = encodeURIComponent(params.search);

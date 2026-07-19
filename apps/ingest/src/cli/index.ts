@@ -456,6 +456,7 @@ program
   .option("--max-duration <ms>", "max duration ms", (v) => Number(v))
   .option("--no-images", "skip image downloads")
   .option("--detail", "follow each product's detail page for full gallery, variants, and description")
+  .option("--home", "scrape the storefront homepage once and snapshot its list payload")
   .option("--json", "emit exactly one JSON result line on stdout; logs go to stderr")
   .action(async (scraperId: string, opts: Record<string, unknown>) => {
     const json = Boolean(opts.json);
@@ -468,6 +469,7 @@ program
       search: opts.search as string | undefined,
       pages: parsePages(opts.pages as string | undefined),
       detail: Boolean(opts.detail),
+      home: Boolean(opts.home),
     };
     const parsed = scraper.paramsSchema.safeParse(params);
     if (!parsed.success) {
